@@ -4,15 +4,15 @@ import statsapi
 import pytz
 from datetime import datetime
 from dateutil import parser
-from dateutil.tz import tzutc, tzlocal
-from pybaseball import playerid_lookup, statcast_pitcher, standings, top_prospects
+from pybaseball import standings
 from datetime import date
 from dotenv import load_dotenv
-from discord.ext import commands
+from teamInfo import teamList
+from divInfo import divList
 
 load_dotenv()
 
-bot = commands.Bot(command_prefix="!")
+bot = discord.Bot()
 
 today = date.today()
 todayDate = today.strftime("%m/%d/%Y")
@@ -23,70 +23,58 @@ async def on_ready():
     print('We have logged in as {0.user}'.format(bot))
 
 
-@bot.command(name='player')
-async def player(ctx, firstName, lastName):
-    pid = playerid_lookup(lastName, firstName)
-    await ctx.send(pid)
+@bot.command(name='player', description="Display's a player's current season or career stats. Defaults to current season.")
+async def player(ctx, playername: discord.Option(str, required=True), scope: discord.Option(str, choices=["season"], default="season", required=False)):
+    statType=scope
+    player = statsapi.lookup_player(playername)
+    pid = player[0]['id']
+    playerName = player[0]['fullName']
+    position = player[0]['primaryPosition']['abbreviation']
+    
+    if position == "TWP":
+        twpData = statsapi.player_stat_data(pid, group="[hitting,pitching]", type=statType)
+        season = twpData['stats'][0]['season']
+        batting = twpData['stats'][0]['stats']
+        pitching = twpData['stats'][1]['stats']
 
+        battingStats = playerName + " " + season + " Batting Stats\n"  + str(batting['atBats']) + " AB\t" + str(batting['avg']) + " AVG\t" + str(batting['homeRuns']) + " HR\t" \
+        + str(batting['rbi']) + " RBI\n\n"
 
-@bot.command(name='prospects')
-async def prospects(ctx, team):
-    data = top_prospects(team)
-    rank = data.iloc[0:9, 0:1]
-    playerName = data.iloc[0:9, 1:2]
-    age = data.iloc[0:9, 2:3]
-    rank = rank.to_string(index=False, header=False)
-    playerName = playerName.to_string(index=False, header=False)
-    age = age.to_string(index=False, header=False)
-    embed = discord.Embed(title=team.capitalize() + " Top 10 Prospects")
-    embed.add_field(name="Rank", value=rank, inline=True)
-    embed.add_field(name="Player", value=playerName, inline=True)
-    embed.add_field(name="Age", value=age, inline=True)
-    await ctx.send(embed=embed)
+        pitchingStats = playername + " " + season + " Pitching Stats\n"  + str(pitching['wins']) + "-" + str(pitching['losses']) + " W/L\t" + str(pitching['era']) + " ERA\t" \
+        + str(pitching['inningsPitched']) + " IP\t" + str(pitching['gamesPlayed']) +" GP\t"
 
+        stats = battingStats + pitchingStats
 
-@bot.command(name='standings')
-async def divisionStandings(ctx, *args):
-    if(len(args) == 3):
-        year = int(args[0])
-        league = args[1]
-        div = args[2]
+        await ctx.respond(stats)
+    elif position == "P":
+        statData = statsapi.player_stat_data(pid, group="[pitching]", type=statType)
+        pitching = statData['stats'][0]['stats']
+        season = statData['stats'][0]['season']
+
+        stats = playerName + " " + season + " Pitching Stats\n\n"  + str(pitching['wins']) + "-" + str(pitching['losses']) + " W/L\t" + str(pitching['era']) + " ERA\t" \
+        + str(pitching['inningsPitched']) + " IP\t" + str(pitching['gamesPlayed']) +" GP\t"
+
+        await ctx.respond(stats)
     else:
-        year = today.year()
-        league = args[0]
-        div = args[1]
+        statData = statsapi.player_stat_data(pid, group="[hitting]", type=statType)
+        batting = statData['stats'][0]['stats']
+        season = statData['stats'][0]['season']
+
+        stats = playerName + " " + season + " Batting Stats\n"  + str(batting['atBats']) + " AB\t" + str(batting['avg']) + " AVG\t" + str(batting['homeRuns']) + " HR\t" \
+        + str(batting['rbi']) + " RBI\n\n"
+        await ctx.respond(stats)
+        
+
+@bot.command(name='standings', description="Displays division standings for specified year. Defaults to current year.")
+async def divisionStandings(ctx, league: discord.Option(str), div: discord.Option(str), year: discord.Option(str, required=False, default = date.today().year)):
+    await ctx.defer()
     divDisplay = (league.upper() + " " + div.capitalize())
-    if(league.upper() == "AL"):
-        if(div.upper() == "EAST"):
-            divPass = 0
-        elif(div.upper() == "CENTRAL"):
-            if(year >= 1994):
-                divPass = 1
+    for i in divList:
+        if (divDisplay == i['name']):
+            if year >= 1994:
+                divPass = i['postRealignmentID']
             else:
-                await ctx.send(divDisplay + " does not exist in that year.")
-        elif(div.upper() == "WEST"):
-            if(year <= 1994):
-                divPass = 1
-            else:
-                divPass = 2
-    elif(league.upper() == "NL"):
-        if(div.upper() == "EAST"):
-            if(year <= 1994):
-                divPass = 2
-            else:
-                divPass = 3
-        elif(div.upper() == "CENTRAL"):
-            if(year >= 1994):
-                divPass = 4
-            else:
-                await ctx.send(divDisplay + " does not exist in that year.")
-        elif(div.upper() == "WEST"):
-            if(year >= 1994):
-                divPass = 5
-            else:
-                divPass = 3
-    else:
-        await ctx.send("You have entered an invalid league.")
+                divPass = i['preRealignmentID']
     try:
         data = standings(year)[divPass]
         i = 0
@@ -106,23 +94,21 @@ async def divisionStandings(ctx, *args):
             j += 1
         winPct = data.iloc[0:j, 3:4]
         winPct = winPct.to_string(index=False, header=False)
-        embed = discord.Embed(title=str(year) + " " +
-                              divDisplay + " Standings")
+        embed = discord.Embed(title=str(year) + " " + divDisplay + " Standings")
         embed.add_field(name="Team", value=teamList, inline=True)
         embed.add_field(name="W-L", value=winLoss, inline=True)
         embed.add_field(name="Win Percentage", value=winPct, inline=True)
-        await ctx.send(embed=embed)
+        await ctx.respond(embed=embed)
     except UnboundLocalError:
-        pass
+        await ctx.respond("You have entered an invalid division.")
+    except TypeError:
+        await ctx.respond("You have entered a division that does not exist in " + str(year) + ".")
 
 
-@bot.command(name='games')
-async def dateGames(ctx, *args):
-    if (len(args) == 0):
-        datePass = today
-    else:
-        datePass = args[0]
-    games = statsapi.schedule(date=datePass)
+@bot.command(name='games', description="Displays all games for a specified date. Defaults to current day.")
+async def dateGames(ctx, date: discord.Option(str, required=False, default=today)):
+    await ctx.defer()
+    games = statsapi.schedule(date=date)
     timeZone = pytz.timezone("America/Detroit")
     now = datetime.now()
     gameText = ""
@@ -131,17 +117,29 @@ async def dateGames(ctx, *args):
         gameLocal = gameUtc.astimezone(timeZone)
         currentTime = now.astimezone(timeZone)
         gameTime = datetime.strftime(gameLocal, '%I:%M %p %Z')
+        for y in teamList:
+            if (x['away_name'] == y['name']):
+                awayTeam = y['fileCode'].upper()
+            if (x['home_name'] == y['name']):
+                homeTeam = y['fileCode'].upper()
         if (gameLocal > currentTime):
-            gameText += (x['away_name'] + " at " +
-                         x['home_name'] + " - " + gameTime + "\n")
+            gameText += (awayTeam + " at " +
+                         homeTeam + " - " + gameTime + "\n")
         else:
             if(x['status'] == "In Progress"):
-                gameText += (x['away_name'] + " (" + str(x['away_score']) + ") at " + x['home_name'] + " (" + str(
-                    x['home_score']) + ") - " + x['inning_state'].capitalize() + x['current_inning'] + "\n")
+                gameText += (awayTeam + " (" + str(x['away_score']) + ") at " + homeTeam + " (" + str(x['home_score']) + ") - " + x['inning_state'].capitalize() + " " + str(x['current_inning']) + "\n")
             else:
-                gameText += (x['away_name'] + " (" + str(x['away_score']) + ") at " +
-                             x['home_name'] + " (" + str(x['home_score']) + ") - " + x['status'] + "\n")
-    await ctx.send(gameText.rstrip())
+                gameText += (awayTeam + " (" + str(x['away_score']) + ") at " +
+                             homeTeam + " (" + str(x['home_score']) + ") - " + x['status'] + "\n")
+    await ctx.respond(gameText.rstrip())
 
+
+@bot.command(name='lastgame', description="Displays the line score from the specified team's last game.")
+async def lastGame(ctx, team: discord.Option(str, required=True)):
+    for y in teamList:
+        if (team.casefold() == y['teamName'].casefold()):
+            teamID = y['id']
+    lastGame = statsapi.last_game(teamID)
+    await ctx.respond("```"+ statsapi.linescore(lastGame) + "```")
 
 bot.run(os.getenv('TOKEN'))
